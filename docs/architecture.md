@@ -1,141 +1,99 @@
 # Architecture
 
-## The Layered Model
+## The Four Layers
 
-TableKit organises code into four layers. Each layer depends only on the layers below it. Nothing reaches up.
+TableKit organises data engineering code into four layers. Each layer has one job. No layer reaches up into the layers above it.
 
-```mermaid
-graph TD
-    ETL[ETL Layer\nBaseETL · SourceBasedETL\nPipeline orchestration]
-    Tables[Tables Layer\nDefinitions · Transformations]
-    Mid[Schemas Layer\nAUDIT_COLUMNS · SCD2_COLUMNS\nComplex types]
-    Sources[Sources Layer\nFileSource · JDBCSource\nDeltaSource · AutoLoaderSource]
-    Core[Core Library\nColumnSchema · TableDefinition\nTableModel · Utils]
-
-    ETL --> Tables
-    ETL --> Sources
-    Tables --> Mid
-    Tables --> Core
-    Mid --> Core
-    Sources --> Core
+```
+┌──────────────────────────────────────────────────────┐
+│                    ETL Layer                          │
+│  Orchestrates the flow between sources and targets.  │
+│  Runs extract, transform, validate, and load.        │
+├──────────────────────────────────────────────────────┤
+│                  Tables Layer                        │
+│  Definitions: the schema for each table.             │
+│  Transformations: how to convert raw data.           │
+├───────────────────────────┬──────────────────────────┤
+│      Schemas Layer        │      Sources Layer        │
+│  Reusable column sets.    │  Declarative data        │
+│  Complex type templates.  │  source definitions.     │
+├───────────────────────────┴──────────────────────────┤
+│                   Core Library                       │
+│  ColumnSchema · TableDefinition · TableModel         │
+│  Schema enforcement · PII masking · Utilities        │
+└──────────────────────────────────────────────────────┘
 ```
 
 ---
 
-## Layer Responsibilities
+## Why Four Layers
 
-### Core Library
+Most data pipelines mix everything together. The schema is defined inside the ETL. The source path is hardcoded in the extract method. The transformation logic is buried between schema setup and write operations.
 
-The foundation. No business logic. No opinions about your data.
+This works until it doesn't. When a schema changes, you search for every place that schema appears. When a source path changes, you hope you find all the ETLs that use it. When an audit column is added, you update it in thirty places and miss three.
 
-- `ColumnSchema` — a column with its type and metadata
-- `TableDefinition` — a validated, composable collection of columns
-- `TableModel` — full table identity with environment awareness
-- `enforce_schema()` — cast DataFrames to target schemas
-- `mask_pii_columns()` — type-aware PII masking
-
-This layer is stable. It changes only when the core abstractions need to change.
-
-### Schemas Layer
-
-Reusable column sets and complex type definitions that belong to no single table.
-
-```mermaid
-graph LR
-    AUDIT[AUDIT_COLUMNS\ncreated_at\nupdated_at\ncreated_by\nupdated_by]
-    SCD2[SCD2_COLUMNS\nsk surrogate key\nvalid_from\nvalid_to\nis_current]
-    TYPES[Complex Types\nADDRESS_SCHEMA\nCONTACT_SCHEMA\nMONEY_SCHEMA]
-```
-
-These are defined once and composed into any table that needs them. The alternative — copy-pasting — guarantees inconsistency over time.
-
-### Sources Layer
-
-Declarative data source definitions. A source is defined once and can be attached to a table or used directly in an ETL.
-
-```mermaid
-graph TD
-    DS[DataSource]
-    DS --> CSV[FileSource\nCSV / JSON / Parquet]
-    DS --> DB[JDBCSource\nSQL Server / PostgreSQL]
-    DS --> DL[DeltaSource\nDelta Lake + time travel]
-    DS --> AL[AutoLoaderSource\nDatabricks incremental]
-```
-
-Every source has the same interface: `source.read(spark)`. The ETL layer does not care where the data comes from.
-
-### Tables Layer
-
-Where your actual tables live.
-
-**Definitions** — the schema for each table, composed from core components and schemas.
-
-**Transformations** — functions that convert raw source data to the target schema. Pure functions: DataFrame in, DataFrame out.
-
-```mermaid
-graph LR
-    SRC[Source Data\nraw columns] -->|transform_fn| TGT[Target Schema\nclean columns]
-```
-
-Keeping transformations separate from definitions means you can test them independently, reuse them, and reason about them in isolation.
-
-### ETL Layer
-
-The orchestration layer. It connects sources to tables through transformations.
-
-```mermaid
-sequenceDiagram
-    participant Pipeline
-    participant ETL
-    participant Source
-    participant Transform
-    participant Delta
-
-    Pipeline->>ETL: run()
-    ETL->>Source: extract()
-    Source-->>ETL: raw DataFrame
-    ETL->>Transform: transform(df)
-    Transform-->>ETL: clean DataFrame
-    ETL->>ETL: validate(df)
-    ETL->>Delta: load(df)
-    Delta-->>ETL: records written
-    ETL-->>Pipeline: ETLResult
-```
-
-`BaseETL` defines the contract. Subclasses implement `extract()` and `transform()`. Everything else — validation, loading, result tracking — is handled by the base class.
+TableKit separates these concerns so that each type of change has exactly one place to make it.
 
 ---
 
-## Data Flow
+## Core Library
 
-A full pipeline run from source to Delta table:
+The foundation. No opinions about your data. No business logic.
 
-```mermaid
-flowchart LR
-    LS[Landing Zone\nCSV / JSON / Parquet] --> SRC
-    DB[(Database\nJDBC)] --> SRC
-    DL[Delta Lake\nbronze layer] --> SRC
+Provides the building blocks that everything else uses: typed column definitions, composable table schemas, environment-aware table identities, and utilities for schema enforcement and data masking.
 
-    SRC[DataSource\n.read spark] --> RAW[Raw DataFrame]
-    RAW --> TRANS[Transformations\ncolumn mapping\nbusiness logic]
-    TRANS --> SCHEMA[Schema Enforcement\nenforce_schema]
-    SCHEMA --> LOAD{Write Mode}
-
-    LOAD -->|OVERWRITE| OW[Delta Table\nfull replace]
-    LOAD -->|APPEND| AP[Delta Table\nappend rows]
-    LOAD -->|MERGE| MG[Delta Table\nupsert by PK]
-```
+This layer is stable. It changes only when the fundamental abstractions need to evolve.
 
 ---
 
-## Why This Structure
+## Schemas Layer
 
-**Single source of truth.** A table's schema, source, and column mapping live in one place. Not scattered across notebooks and YAML files.
+Reusable components that belong to no single table.
 
-**Composability.** Columns, definitions, and sources are all composable. Build complex things from simple, tested pieces.
+Audit columns appear in every table. SCD2 keys appear in every slowly-changing dimension. Address structures appear wherever addresses are stored. These are defined once in the schemas layer and composed into tables that need them.
 
-**Testability.** Each layer can be tested independently. Transformations are pure functions. Sources can be mocked. The ETL contract is defined by `BaseETL`.
+---
 
-**Consistency.** Audit columns, SCD2 patterns, and complex types are defined once. Every table that uses them is automatically consistent.
+## Sources Layer
 
-**Environment safety.** Environment-aware naming is built into `TableModel`. You cannot accidentally write to prod from a dev pipeline if the environment is set correctly.
+Where data comes from is a first-class concern, not an implementation detail buried in ETL code.
+
+Supported source types:
+
+| Source | Use case |
+|--------|----------|
+| File (CSV, JSON, Parquet, ORC) | Data lake landing zones |
+| Delta Lake | Bronze / silver / gold layers, with time travel |
+| JDBC | Relational databases (SQL Server, PostgreSQL, etc.) |
+| Auto Loader | Databricks incremental file ingestion |
+| Catalog Table | Any table registered in the Spark catalog |
+
+A source is defined once and attached to a table. The ETL layer reads from it without needing to know the source type.
+
+---
+
+## Tables Layer
+
+Two folders. Two jobs.
+
+**Definitions** — what each table looks like. Schema, source, column mapping. The complete identity of the table.
+
+**Transformations** — how raw data becomes target data. Pure functions: a DataFrame goes in, a clean DataFrame comes out. No side effects. Easy to test.
+
+Keeping these separate means you can test a transformation without running a full pipeline, and you can change a schema without touching transformation logic.
+
+---
+
+## ETL Layer
+
+The orchestration layer. It reads from sources, applies transformations, validates the result, and writes to the target.
+
+The flow is always the same:
+
+```
+Extract → Transform → Validate → Load → Result
+```
+
+What changes per table is the extract logic and the transformation. The validate step enforces the target schema. The load step handles OVERWRITE, APPEND, or MERGE based on configuration.
+
+Every ETL run produces a result with records read, records written, duration, and status. A pipeline collects these results across multiple ETLs and reports the full picture.

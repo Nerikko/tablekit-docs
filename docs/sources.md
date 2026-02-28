@@ -1,108 +1,56 @@
 # Data Sources
 
-A `DataSource` defines where data comes from. It is a first-class object that can be attached to a `TableModel`, passed to an ETL, or used directly.
+A data source is a first-class object in TableKit. It is not a string path inside an ETL method. It is a defined, named, reusable component.
 
 ---
 
-## The Problem with Hardcoded Sources
+## The Problem
 
-In most pipelines, the source path is buried inside the ETL code:
+In most pipelines, the source is invisible:
 
 ```python
-def extract(self):
-    return self.spark.read.csv("/some/path/customers/")
+return spark.read.csv("/mnt/landing/customers/")
 ```
 
-This means:
-- The source location is invisible from the table definition
-- Changing the source requires editing the ETL class
-- You cannot reuse the same source across multiple ETLs without duplication
-- Testing requires mocking at the class level
+This line tells you nothing about the source except its location. You do not know what format options are applied, whether there is a schema, or whether this path is used anywhere else. If the path changes, you search the codebase hoping to find every occurrence.
 
 ---
 
 ## Declarative Sources
 
-A `DataSource` separates the source from the logic:
+TableKit defines sources as structured objects with a name, type, location, and options. A source can be attached to a `TableModel`, making the relationship between a table and its data permanent and visible.
 
-```
-DataSource
-├── name         → identifier for this source
-├── source_type  → CSV, JSON, Parquet, Delta, JDBC, AutoLoader, etc.
-├── path         → file path or table location
-├── options      → format-specific options (header, delimiter, etc.)
-└── schema       → optional explicit StructType
-```
-
-Define it once, attach it to a table, and the ETL layer reads from it automatically.
+When a source is attached to a table, the ETL layer can read from it automatically. The ETL does not need to know the source type, path, or format. It asks the table, reads the source, and proceeds.
 
 ---
 
-## Source Types
+## Supported Source Types
 
-```mermaid
-graph TD
-    DS[DataSource]
-    DS --> FS[FileSource\nCSV · JSON · Parquet · ORC · Avro]
-    DS --> JS[JDBCSource\nSQL Server · PostgreSQL · MySQL · Oracle]
-    DS --> DLS[DeltaSource\nDelta Lake with optional time travel]
-    DS --> ALS[AutoLoaderSource\nDatabricks cloudFiles incremental ingestion]
-    DS --> TS[TableSource\nSpark catalog table]
-```
+**File sources** cover the most common landing zone formats: CSV, JSON, Parquet, ORC, and Avro. Format-specific options like headers, delimiters, and multiline support are part of the source definition.
+
+**Delta sources** read from Delta Lake tables with optional time travel. You can read the current state, a specific version, or the state at a specific timestamp. This is useful for incremental pipelines and historical audits.
+
+**JDBC sources** connect to relational databases. Connection details, table or query, fetch size, and credentials are all part of the source definition. The ETL layer does not see the connection string.
+
+**Auto Loader** is Databricks' incremental file ingestion mechanism. It tracks which files have been processed and picks up new arrivals automatically. Auto Loader sources support schema inference and hints, with schema stored at a configurable location.
 
 ---
 
-## Source-Table Binding
+## Source and Table Together
 
-Attaching a source to a `TableModel` makes the relationship explicit:
+The most powerful use of sources is binding them to tables:
 
-```mermaid
-graph LR
-    SRC[FileSource\npath: /landing/customers\nformat: csv] --> TBL
-    MAP[column_mapping\ncustomer_id → id\nemail → user_email] --> TBL
-    TBL[TableModel\ndim_customers] --> ETL[SourceBasedETL]
-    ETL --> DLT[Delta Table]
+```
+TableModel
+├── definition    → the schema
+├── source        → where the data comes from
+└── column_mapping → how source columns map to target columns
 ```
 
-The `TableModel` knows:
-- Where its data comes from
-- How source columns map to target columns
-
-The ETL does not need to know either. It asks the table, reads the source, applies the mapping, and loads.
+This makes the table definition self-contained. Anyone reading it knows the schema, the source, and the mapping. There is no need to trace through ETL code to understand where data originates.
 
 ---
 
-## Time Travel with Delta
+## Streaming
 
-`DeltaSource` supports Delta Lake time travel for historical reads:
-
-```mermaid
-graph LR
-    T0[Version 0\n2024-01-01] --> T1[Version 1\n2024-06-01]
-    T1 --> T2[Version 2\n2024-12-01]
-    T2 --> T3[Version 3\ncurrent]
-
-    Q1[DeltaSource\nversion: 1] -.reads.-> T1
-    Q2[DeltaSource\ntimestamp: 2024-12-01] -.reads.-> T2
-    Q3[DeltaSource\nno options] -.reads.-> T3
-```
-
-This is useful for incremental pipelines, auditing, and debugging production issues without needing backups.
-
----
-
-## Streaming Sources
-
-`DeltaSource` and `AutoLoaderSource` support streaming reads via `source.read_stream(spark)`:
-
-```mermaid
-flowchart LR
-    LS[Landing Zone\nnew files arrive] --> AL[AutoLoaderSource\ncloudFiles format]
-    AL --> SD[Streaming DataFrame]
-    SD --> T[Transformations]
-    T --> DW[Delta Table\nstreaming write]
-    DW --> CP[Checkpoint\noffset tracking]
-    CP --> AL
-```
-
-Auto Loader tracks which files have been processed. New files are picked up automatically. No manual watermarks.
+Delta and Auto Loader sources support streaming reads. The same source definition works for both batch and streaming pipelines. Auto Loader tracks processed files through a checkpoint, so restarts pick up exactly where they left off.

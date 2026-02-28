@@ -1,126 +1,52 @@
 # Why TableKit
 
-## Schema as Code
+## The Real Cost of Schema Sprawl
 
-Most data teams treat schemas as a side effect of the pipeline. The schema is inferred, or it lives in a YAML file no one updates, or it's scattered across thirty `StructField` calls with no comments.
+A data platform with ten tables probably has twenty places where schema is defined or assumed. The `StructType` in the notebook. The column list in the SQL query. The field names in the transformation. The documentation in the wiki that nobody updates.
 
-TableKit treats the schema as code. Not configuration, not documentation — code. That means:
+When a schema changes — and it always does — each of those places needs to change. Some of them will be missed. The pipeline will fail in production, or worse, it will succeed and produce wrong data.
 
-- **Version controlled.** Schema changes go through code review.
-- **Tested.** You can write tests against your schema definitions.
-- **Discoverable.** IDE autocomplete works. You know what columns exist without running a query.
-- **Self-documenting.** Comments are part of the schema, not a separate document.
+TableKit exists because this is a solved problem in software engineering. Application developers do not repeat type definitions across twenty files. They define a model once and use it everywhere. Data engineers should do the same.
 
 ---
 
-## Composition Over Repetition
+## Schema as the Source of Truth
 
-Every data team ends up writing the same patterns over and over:
+When a table definition is the single source of truth, a schema change has exactly one place to make it. The ETL reads from the definition. The tests validate against the definition. The documentation generates from the definition.
 
-```
-created_at TIMESTAMP
-updated_at TIMESTAMP
-created_by STRING
-updated_by STRING
-```
-
-These appear in every table. Without a framework, they get copy-pasted. One day someone adds a column in one table and forgets the others. Six months later, the schemas are different across tables and no one knows why.
-
-TableKit solves this with composition:
-
-```mermaid
-graph TD
-    A[AUDIT_COLUMNS\ndefined once] --> T1[dim_customers]
-    A --> T2[dim_products]
-    A --> T3[fact_orders]
-    A --> T4[every other table]
-```
-
-Change `AUDIT_COLUMNS` in one place. Every table picks up the change.
-
-The same applies to SCD2 columns, address structs, contact schemas — anything that appears in more than one table.
+This is not a new idea. It is how well-engineered systems work. TableKit brings it to PySpark.
 
 ---
 
-## Explicit Over Implicit
+## What Composition Eliminates
 
-The two biggest sources of bugs in data pipelines are implicit assumptions and hidden state.
+Every data team has audit columns. Every data team has SCD2 tables. Every data team has address or contact structures that appear across multiple tables.
 
-**Implicit source paths:**
+Without composition, these are copy-pasted. Over time, copies diverge. One table has `created_at` as a timestamp. Another has it as a string. One table has four SCD2 columns. Another has three and uses different names.
 
-```python
-# Where does this data come from?
-def extract(self):
-    return self.spark.read.csv("/data/customers/")
-```
-
-**Explicit source binding:**
-
-```mermaid
-graph LR
-    FS[FileSource\npath: /data/customers\nformat: csv\nheader: true] --> TM[TableModel\ndim_customers]
-```
-
-The table knows its source. Anyone reading the table definition knows where the data comes from without reading the ETL code.
-
-**Implicit environment handling:**
-
-```python
-# Which environment is this?
-df.write.saveAsTable("main.customers.users")
-```
-
-**Explicit environment awareness:**
-
-```mermaid
-graph LR
-    TM[TableModel\nenv: dev] --> FN1[main.dev_customers.users]
-    TM2[TableModel\nenv: prod] --> FN2[main.customers.users]
-```
-
-The environment is set once. Every table name derives from it automatically.
+With composition, these patterns are defined once. A table either uses them or it does not. There is no third option where it uses a slightly different version.
 
 ---
 
-## Separation of Concerns
+## Explicit Beats Implicit
 
-In a typical notebook pipeline, schema definition, source reading, transformation logic, and write mode are all mixed together. Changing one thing requires understanding everything.
+Two questions that should have obvious answers in any data platform:
 
-TableKit splits these into separate layers:
+**Where does this table's data come from?**
+In most pipelines, you trace through ETL code, read configuration files, and check environment variables to answer this. In TableKit, the source is part of the table definition. The answer is one line.
 
-```mermaid
-graph TD
-    A[What does the table look like?\nTableDefinition] -.->|separate| B
-    B[Where does the data come from?\nDataSource] -.->|separate| C
-    C[How do we convert raw data?\nTransformations] -.->|separate| D
-    D[How do we write to the target?\nBaseETL write mode]
-```
-
-Each question has one answer in one place. When the source changes, you change the source. When the schema changes, you change the definition. When the transformation changes, you change the transformation.
+**Which environment does this pipeline target?**
+In most platforms, this is a string concatenated somewhere in the code. In TableKit, the environment is set once and every table name derives from it. You cannot accidentally hardcode the wrong catalog.
 
 ---
 
-## Testability
+## What You Cannot See Here
 
-Pipelines built with TableKit are testable at every level:
+This documentation shows what TableKit does and why the design decisions are sound. It does not show how to build it.
 
-```mermaid
-graph TD
-    U1[Unit: ColumnSchema\nvalidate column properties]
-    U2[Unit: TableDefinition\nvalidate composition and schema]
-    U3[Unit: DataSource\nvalidate source configuration]
-    U4[Unit: Transformations\npure functions, easy to test]
-    I1[Integration: ETL\nmock source, test full run]
-    I2[Integration: Pipeline\ntest multi-table orchestration]
+The implementation — the column validation logic, the composition rules, the merge condition generation, the schema enforcement utilities, the source abstraction — is what you get when you buy TableKit.
 
-    U1 --> U2
-    U2 --> U4
-    U3 --> I1
-    U4 --> I1
-    I1 --> I2
-```
-
-Transformations are pure functions — DataFrame in, DataFrame out. Sources are injectable. The ETL contract is defined by an abstract class. Every part can be tested independently.
+What you buy is not just code. It is months of iteration on patterns used in production data platforms across banking, insurance, and legal industries. It is a starting point that works, rather than a starting point you build yourself.
 
 ---
 
@@ -130,3 +56,5 @@ Transformations are pure functions — DataFrame in, DataFrame out. Sources are 
 |---------|----------------|-------|
 | [**TableKit Core**](https://sagnelli.gumroad.com/l/tablekit-core) | Core library, schemas, sources, ETL framework, 43 tests, full docs | €49 |
 | [**TableKit Pro**](https://sagnelli.gumroad.com/l/tablekit-pro) | Everything in Core + Databricks Asset Bundle, pipeline definitions, deployment notebooks | €99 |
+
+[View the documentation repository](https://github.com/Nerikko/tablekit-docs) · [Gumroad store](https://sagnelli.gumroad.com)

@@ -1,120 +1,58 @@
 # Core Concepts
 
-TableKit is built on three core objects. Everything else builds on top of them.
+TableKit is built on three core objects that work together to define your data infrastructure as code.
 
 ---
 
 ## ColumnSchema
 
-A `ColumnSchema` is the smallest unit — a single column definition with all its metadata.
+The smallest unit in TableKit. A column is not just a name and a type — it carries intent.
 
-```
-ColumnSchema
-├── name          → column name in the table
-├── type          → PySpark DataType (StringType, IntegerType, etc.)
-├── nullable      → whether nulls are allowed (default: True)
-├── comment       → description for data catalog documentation
-├── is_primary_key    → marks this column as part of the PK
-├── is_natural_key    → business key used for merge operations
-├── is_clustered_by   → include in CLUSTER BY for Delta optimization
-└── always_as_identity → auto-increment (LongType only)
-```
+Every column knows:
+- Its data type
+- Whether it allows nulls
+- Whether it is a primary key or business key
+- Whether it should be used for Delta clustering
+- Its description for data catalog documentation
 
-### Why this matters
+This metadata is not stored in a separate YAML or wiki. It lives with the column definition, version-controlled alongside your code.
 
-Without this, you write:
-
-```python
-StructField("customer_id", StringType(), False)
-```
-
-There is no way to know from this line alone whether `customer_id` is a primary key, whether it should be clustered, or what it represents. You have to look at the whole schema and hope there's a comment somewhere.
-
-With `ColumnSchema`:
-
-```python
-ColumnSchema(
-    name="customer_id",
-    type=StringType(),
-    nullable=False,
-    comment="Unique customer identifier",
-    is_primary_key=True,
-)
-```
-
-The intent is explicit. The IDE knows the type. The schema knows what the primary key is. No guessing.
+**Why it matters:** When schema metadata is scattered across documentation and comments, it goes stale. When it is part of the schema definition itself, it stays accurate automatically.
 
 ---
 
 ## TableDefinition
 
-A `TableDefinition` is an ordered collection of `ColumnSchema` objects. It validates the collection and provides schema generation.
+A `TableDefinition` is a validated, composable collection of columns.
+
+The key capability is **composition**. Definitions can be combined:
 
 ```
-TableDefinition
-├── columns          → list of ColumnSchema
-├── primary_keys     → derived: columns where is_primary_key=True
-├── natural_keys     → derived: columns where is_natural_key=True
-├── cluster_columns  → derived: columns where is_clustered_by=True
-└── column_names     → derived: all column names as a list
+customer columns  +  audit columns  =  full table definition
 ```
 
-### Composition
+This means common column sets — audit timestamps, SCD2 keys, soft-delete flags — are defined once and reused across every table that needs them. When the audit columns change, every table picks up the change automatically.
 
-The most important feature of `TableDefinition` is that definitions can be combined with `+`:
+A `TableDefinition` also knows which columns are primary keys, natural keys, and cluster columns. This information is used by the ETL layer without any additional configuration.
 
-```
-customers_columns + AUDIT_COLUMNS = full_definition
-```
-
-```mermaid
-graph LR
-    A[customer_id\nfirst_name\nlast_name\nemail] -->|+| C[Full Definition]
-    B[created_at\nupdated_at\ncreated_by\nupdated_by] -->|+| C
-    C --> D[TableModel]
-```
-
-This means you define audit columns once and reuse them everywhere. SCD2 columns once. Address structs once. No copy-paste.
-
-### Schema generation
-
-`TableDefinition.to_spark_schema()` converts the definition into a PySpark `StructType`. You never write `StructType` or `StructField` by hand.
+**Why it matters:** Copy-paste is the most common source of schema inconsistency in data platforms. Composition eliminates it.
 
 ---
 
 ## TableModel
 
-A `TableModel` wraps a `TableDefinition` with the full table identity: name, database, catalog, and environment.
+A `TableModel` wraps a `TableDefinition` with the full identity of a table: name, database, catalog, and environment.
 
-```
-TableModel
-├── table_name          → the table name
-├── database            → the schema/database
-├── catalog             → Unity Catalog name (default: "main")
-├── environment         → dev / staging / prod
-├── definition          → the TableDefinition
-├── source              → optional linked DataSource
-└── column_mapping      → optional source-to-target column map
-```
+The environment awareness is the critical feature. The same table definition produces different fully-qualified names depending on the environment:
 
-### Environment-aware naming
+| Environment | Full Table Name |
+|-------------|----------------|
+| dev | `main.dev_sales.dim_customers` |
+| staging | `main.staging_sales.dim_customers` |
+| prod | `main.sales.dim_customers` |
 
-```mermaid
-graph TD
-    A[TableModel\ntable_name: users\ndatabase: app\nenvironment: dev] --> B[full_name\nmain.dev_app.users]
-    C[TableModel\ntable_name: users\ndatabase: app\nenvironment: prod] --> D[full_name\nmain.prod_app.users]
-```
+The environment is set once. Every table name derives from it. There is no string manipulation in pipeline code, no environment variables scattered across notebooks.
 
-The same table definition produces different fully-qualified names per environment. No string manipulation in pipelines. No environment variables scattered across notebooks.
+A `TableModel` can also hold a reference to its data source and column mapping. The table definition becomes the single source of truth for schema, source, and structure.
 
-### Source binding
-
-A `TableModel` can hold a reference to its data source:
-
-```
-TableModel
-└── source: FileSource(path="/landing/customers/", format="csv")
-└── column_mapping: { "customer_id": "id", "email": "user_email" }
-```
-
-When the ETL layer reads this table, it knows exactly where to get the data and how to map columns. The source is part of the table definition, not hidden in pipeline code.
+**Why it matters:** Environment-related bugs are among the most common and most costly in data engineering. Baking environment awareness into the table definition removes an entire category of errors.
